@@ -27,7 +27,7 @@ def show_preview(conn:'Psql Connection'):
 
 # 通过页面选择创建维度和cube,返回维度名称，cube名称，度量值名称
 def create_drag_interface(conn:'Psql Connection'):
-    st.header("创建TM1维度和立方体")
+    st.header("Define Dimensions and Measures")
 
     # 建立与数据库链接
     cursor = conn.cursor()
@@ -35,7 +35,6 @@ def create_drag_interface(conn:'Psql Connection'):
 
     # 创建两列布局
     col1, col2 = st.columns(2)
-    cube_name = st.text_input(label='请输入Cube名称')
     cursor = conn.cursor()
     with col1:
         st.subheader("Rows (Dimensions)")
@@ -54,7 +53,7 @@ def create_drag_interface(conn:'Psql Connection'):
         measure_dimension_name = st.text_input(label='请输入Measure维度名称')
         measures = st.multiselect("选择度量",[col for col in all_columns])
 
-    return cube_name,dimension_name,dimension_table_columns_mapping, measure_dimension_name,measures
+    return dimension_name,dimension_table_columns_mapping, measure_dimension_name,measures
 
 # 创建维度 - 数据库适配
 def create_tm1_dimension_from_database(conn:'Qsql Connection',tm1:TM1Service,dim_name, dimension_mapping:dict):
@@ -93,10 +92,15 @@ def create_tm1_dimension_from_database(conn:'Qsql Connection',tm1:TM1Service,dim
     if len(data)>0:
         hierarchy_data = []
         for tup in data:
-            for i in range(len(tup)-1):
-                hierarchy_data.append((tup[i],tup[i+1]))
+            # 维表多列情形,才会有edge关系
+            if len(tup)>1:
+                for i in range(len(tup)-1):
+                    if tup[i] !='' and tup[i+1]!='':
+                        hierarchy_data.append((tup[i],tup[i+1]))
+            # 收集每行的element
             for ele in tup:
-                hierarchy_data_elements_set.add(ele)
+                    if ele != '':
+                        hierarchy_data_elements_set.add(ele)
         hierarchy_data_edges_set = set(hierarchy_data)
 
     # edge need to unwind
@@ -125,6 +129,8 @@ def create_tm1_dimension_from_database(conn:'Qsql Connection',tm1:TM1Service,dim
 
     # Update the hierarchy
     tm1.dimensions.hierarchies.update(hierarchy)
+    # return success flag
+    st.success('创建维度成功', icon="✅")
 
 # 创建维度 from list
 def create_tm1_dimension_from_list(tm1:TM1Service,dim_name,data:list):
@@ -167,6 +173,7 @@ def create_tm1_cube(tm1:TM1Service,cube_name, dimensions):
     if not tm1.cubes.exists(cube_name):
         new_cube = Cube(name=cube_name, dimensions=dimensions)
         tm1.cubes.create(new_cube)
+        st.success('创建Cube成功', icon="✅")
 
 
 
@@ -178,7 +185,7 @@ def main():
 
         show_preview(conn)
 
-        cube_name,dimension_name,dimension_table_columns_mapping, measure_dimension_name,measures = create_drag_interface()
+        dimension_name,dimension_table_columns_mapping, measure_dimension_name,measures = create_drag_interface(conn)
 
 
         # TM1 Connection
@@ -192,6 +199,10 @@ def main():
             # 获取当前示例中的所有维度
             all_dimensions_name = tm1.dimensions.get_all_names()
             all_dimensions_name = [name for name in all_dimensions_name if "}" not in name]
+            cube_name = st.text_input(label='请输入Cube名称')
+            dimensions_chosen = st.multiselect(label='请选择维度', options=all_dimensions_name)
+            if st.button("创建TM1 Cube"):
+                create_tm1_cube(tm1,cube_name,dimensions_chosen)
 
 if __name__ == "__main__":
     main()

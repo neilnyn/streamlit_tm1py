@@ -92,12 +92,15 @@ def create_tm1_dimension_from_database(conn:'Qsql Connection',tm1:TM1Service,dim
     if len(data)>0:
         hierarchy_data = []
         for tup in data:
-            for i in range(len(tup)-1):
-                if tup[i] !='' and tup[i+1]!='':
-                    hierarchy_data.append((tup[i],tup[i+1]))
+            # 维表多列情形,才会有edge关系
+            if len(tup)>1:
+                for i in range(len(tup)-1):
+                    if tup[i] !='' and tup[i+1]!='':
+                        hierarchy_data.append((tup[i],tup[i+1]))
+            # 收集每行的element
             for ele in tup:
-                if ele != '':
-                    hierarchy_data_elements_set.add(ele)
+                    if ele != '':
+                        hierarchy_data_elements_set.add(ele)
         hierarchy_data_edges_set = set(hierarchy_data)
 
     # edge need to unwind
