@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 import psycopg2
 from TM1py import TM1Service
@@ -25,6 +26,89 @@ def show_preview(conn:'Psql Connection'):
     st.text(columns)
     st.table(data)
 
+# 创建时间维表
+def create_time_dimension_table(conn):
+   """创建时间维度表"""
+   cursor = conn.cursor()
+   sql = '''
+      SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+      AND table_name = 'time_dimension');
+      '''
+   cursor.execute(sql)
+   data = cursor.fetchone()
+   #if table not exists.
+   if data[0] is False:
+      # 创建时间维度表
+      cursor.execute("""
+          CREATE TABLE IF NOT EXISTS time_dimension (
+              year_code TEXT,
+              month_code TEXT,
+              day_code TEXT,
+              hour_code TEXT,
+              original_timestamp TEXT
+          )
+      """)
+
+      # 从orders表获取唯一的支付时间
+      cursor.execute("SELECT DISTINCT 支付时间 FROM orders WHERE 支付时间 IS NOT NULL")
+      timestamps = cursor.fetchall()
+
+      # 插入时间维度数据
+      for timestamp in timestamps:
+         if timestamp[0]:
+            try:
+               dt = pd.to_datetime(timestamp[0])
+            except Exception as e:
+               print(timestamp[0]+'时间格式错误')
+               continue
+            cursor.execute("""
+                  INSERT INTO time_dimension (year_code, month_code, day_code, hour_code, original_timestamp)
+                  VALUES (%s, %s, %s, %s, %s)
+              """, (
+               f'Y{dt.year}',
+               f'M{dt.month:02d}',
+               f'D{dt.day:02d}',
+               f'{dt.hour:02d}',
+               timestamp[0]
+            ))
+   else:
+      sql = '''
+      select DISTINCT o.支付时间 
+      from orders o
+      left join time_dimension td
+      on o."支付时间" = td.original_timestamp
+      where td.original_timestamp is null
+      '''
+
+      # 从orders表获取唯一的支付时间
+      cursor.execute(sql)
+      timestamps = cursor.fetchall()
+
+      # 插入时间维度数据
+      for timestamp in timestamps:
+         if timestamp[0]:
+            try:
+               dt = pd.to_datetime(timestamp[0])
+            except Exception as e:
+               print(timestamp[0] + '时间格式错误')
+               continue
+            cursor.execute("""
+                        INSERT INTO time_dimension (year_code, month_code, day_code, hour_code, original_timestamp)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (
+               f'Y{dt.year}',
+               f'M{dt.month:02d}',
+               f'D{dt.day:02d}',
+               f'{dt.hour:02d}',
+               timestamp[0]
+            ))
+   conn.commit()
+
+
+
 # 通过页面选择创建维度和cube,返回维度名称，cube名称，度量值名称
 def create_drag_interface(conn:'Psql Connection'):
     st.header("Define Dimensions and Measures")
@@ -32,10 +116,8 @@ def create_drag_interface(conn:'Psql Connection'):
     # 建立与数据库链接
     cursor = conn.cursor()
 
-
     # 创建两列布局
     col1, col2 = st.columns(2)
-    cursor = conn.cursor()
     with col1:
         st.subheader("Rows (Dimensions)")
         table_name = st.selectbox("选择维表",["product_zl","product_dimension", "store_dimension", "time_dimension"])
@@ -176,33 +258,90 @@ def create_tm1_cube(tm1:TM1Service,cube_name, dimensions):
         st.success('创建Cube成功', icon="✅")
 
 
+# 获取实时表的列名
+def get_orders_columns(conn):
+    """获取orders表的所有列名"""
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'orders'
+    """)
+    columns = [col[0] for col in cursor.fetchall()]
+    return columns
 
-
-
+def get_tm1_all_dimensions(tm1:TM1Service):
+    all_dimensions_name = tm1.dimensions.get_all_names()
+    all_dimensions_name = [name for name in all_dimensions_name if "}" not in name]
+    return all_dimensions_name
+# 获取tm1中所有维度名称
+def get_tm1_cube_dimensions(tm1:TM1Service,cube_name):
+    """获取TM1中的cube维度"""
+    cube_dimensions = tm1.cubes.get_dimension_names(cube_name)
+    return cube_dimensions
+# 获取tm1中的所有cube名称
+def get_tm1_cubes(tm1:TM1Service):
+    cube_names = tm1.cubes.get_all_names()
+    cube_names= [name for name in cube_names if "}" not in name]
+    return cube_names
 def main():
     # PostgreSQL连接
     with psycopg2.connect(database="master", user="postgres", password="1234", host="localhost", port="5432") as conn:
-
+        # 数据预览
         show_preview(conn)
-
+        # 是否创建时间维表
+        create_time_dim = st.checkbox("是否创建时间维度表")
+        if create_time_dim:
+            try:
+                create_time_dimension_table(conn)
+                st.success("时间维度表创建成功")
+            except Exception as e:
+                st.error(f"创建时间维度表失败: {str(e)}")
+        # 拖拽部分
         dimension_name,dimension_table_columns_mapping, measure_dimension_name,measures = create_drag_interface(conn)
 
 
         # TM1 Connection
         with TM1Service(address='localhost', port=30059, user='neil', password='123', ssl=False) as tm1:
-            st.title("TM1 Dimension Creator")
+            st.subheader("TM1 Dimension Creator")
             if st.button("从Rows创建TM1维度"):
                     create_tm1_dimension_from_database(conn, tm1, dimension_name, dimension_table_columns_mapping)
             if st.button("从Column创建TM1维度"):
                     create_tm1_dimension_from_list(tm1,measure_dimension_name,measures)
-            st.title("TM1 Cube Creator")
+            st.subheader("TM1 Cube Creator")
             # 获取当前示例中的所有维度
-            all_dimensions_name = tm1.dimensions.get_all_names()
-            all_dimensions_name = [name for name in all_dimensions_name if "}" not in name]
+            all_dimensions_name = get_tm1_all_dimensions(tm1)
             cube_name = st.text_input(label='请输入Cube名称')
             dimensions_chosen = st.multiselect(label='请选择维度', options=all_dimensions_name)
             if st.button("创建TM1 Cube"):
                 create_tm1_cube(tm1,cube_name,dimensions_chosen)
+            st.subheader("Data Import")
+            st.markdown("#### 维度映射")
+            target_cube_name = st.text_input(label='请输入目标Cube名称')
+            try:
+                target_cube_dimensions_name = get_tm1_cube_dimensions(tm1,target_cube_name)
+            except Exception as e:
+                target_cube_dimensions_name = []
+            all_columns = get_orders_columns(conn)
+            st.write("请对事实表中的字段选择对应的维度")
+            # 存储映射关系
+            dimension_mapping = {}
+            # 为目标cube维度创建一个下拉选择框
+            for dim in target_cube_dimensions_name:
+                selected_column = st.selectbox(
+                    f"为维度 '{dim}' 选择对应的列",
+                    [""] + all_columns,
+                    key=f"dim_{dim}"
+                )
+                if selected_column:
+                    dimension_mapping[dim] = selected_column
+            st.write("维度映射关系：", dimension_mapping)
+
+            # 导入数据
+            if st.button("导入数据"):
+                target_cube_dimensions = get_tm1_cube_dimensions(tm1,target_cube_name)
+                #import_data(conn, tm1, dimension_mapping)
+
 
 if __name__ == "__main__":
     main()
