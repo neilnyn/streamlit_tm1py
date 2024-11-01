@@ -19,7 +19,7 @@ def preview_data(conn:'Psql Connection',table_name, limit=10):
 
 # 显示数据
 def show_preview(conn:'Psql Connection'):
-    tables = ["product_zl","product_dimension", "store_dimension", "time_dimension", "orders"]
+    tables = ["channel_dimension","product_dimension", "store_dimension", "time_dimension", "orders"]
     selected_table = st.selectbox("选择要预览的表", tables)
     columns, data = preview_data(conn,selected_table)
     st.write(f"{selected_table} 预览:")
@@ -277,13 +277,30 @@ def get_tm1_all_dimensions(tm1:TM1Service):
 # 获取tm1中所有维度名称
 def get_tm1_cube_dimensions(tm1:TM1Service,cube_name):
     """获取TM1中的cube维度"""
-    cube_dimensions = tm1.cubes.get_dimension_names(cube_name)
+    try:
+        cube_dimensions = tm1.cubes.get_dimension_names(cube_name)
+    except Exception as e:
+        cube_dimensions = []
     return cube_dimensions
 # 获取tm1中的所有cube名称
 def get_tm1_cubes(tm1:TM1Service):
     cube_names = tm1.cubes.get_all_names()
     cube_names= [name for name in cube_names if "}" not in name]
     return cube_names
+# 获取tm1 维度中的所有元素
+def get_tm1_dimension_elements(tm1:TM1Service,dimension_name):
+    try:
+        elements = tm1.elements.get_element_names(dimension_name,dimension_name)
+    except Exception as e:
+        elements = []
+    return elements
+# 导入tm1数据
+def import_tm1_data(conn:'Psql Connection',tm1:TM1Service,dimension_mapping:dict,measure_mapping:dict):
+    cursor = conn.cursor()
+    cursor.execute('''
+                   select''')
+    pass
+
 def main():
     # PostgreSQL连接
     with psycopg2.connect(database="master", user="postgres", password="1234", host="localhost", port="5432") as conn:
@@ -315,27 +332,39 @@ def main():
             dimensions_chosen = st.multiselect(label='请选择维度', options=all_dimensions_name)
             if st.button("创建TM1 Cube"):
                 create_tm1_cube(tm1,cube_name,dimensions_chosen)
+
+
             st.subheader("Data Import")
             st.markdown("#### 维度映射")
             target_cube_name = st.text_input(label='请输入目标Cube名称')
-            try:
-                target_cube_dimensions_name = get_tm1_cube_dimensions(tm1,target_cube_name)
-            except Exception as e:
-                target_cube_dimensions_name = []
+            target_cube_dimensions_name = get_tm1_cube_dimensions(tm1,target_cube_name)
             all_columns = get_orders_columns(conn)
             st.write("请对事实表中的字段选择对应的维度")
-            # 存储映射关系
+            # 存储tm1维度和事实表字段映射关系
             dimension_mapping = {}
             # 为目标cube维度创建一个下拉选择框
             for dim in target_cube_dimensions_name:
                 selected_column = st.selectbox(
                     f"为维度 '{dim}' 选择对应的列",
-                    [""] + all_columns,
-                    key=f"dim_{dim}"
+                    [""] + all_columns
                 )
                 if selected_column:
                     dimension_mapping[dim] = selected_column
             st.write("维度映射关系：", dimension_mapping)
+
+            # 存储tm1 measures和事实表的映射关系
+            measure_mapping = {}
+            # 选择measure 维度并返回维度元素
+            measure_dimension_name = st.selectbox('请挑选measure维度',target_cube_dimensions_name)
+            measure_elements = get_tm1_dimension_elements(tm1,measure_dimension_name)
+            for measure_element in measure_elements:
+                selected_column = st.selectbox(
+                    f"为measure '{measure_element}' 选择对应的列",
+                    [""] + all_columns
+                )
+                if selected_column:
+                    measure_mapping[measure_element] = selected_column
+            st.write("Measure映射关系：", measure_mapping)
 
             # 导入数据
             if st.button("导入数据"):
