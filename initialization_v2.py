@@ -120,7 +120,7 @@ def create_drag_interface(conn:'Psql Connection'):
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Rows (Dimensions)")
-        table_name = st.selectbox("选择维表",["product_zl","product_dimension", "store_dimension", "time_dimension"])
+        table_name = st.selectbox("选择维表",["channel_dimension","product_dimension", "store_dimension", "time_dimension"])
         dimension_name = st.text_input(label='请输入新维度名称')
         dimension_table_columns_mapping=defaultdict(list)
 
@@ -209,6 +209,16 @@ def create_tm1_dimension_from_database(conn:'Qsql Connection',tm1:TM1Service,dim
     for edge in edges_need_to_update:
         hierarchy.add_edge(parent=edge[1],component=edge[0],weight=1)
 
+    # default add top element
+    top_element = 'All ' + dim_name + ' List'
+    if top_element not in hierarchy.elements:
+        hierarchy.add_element(top_element,'Consolidated')
+    # all leaves add to top element
+    for element in hierarchy.elements:
+        ele = hierarchy.get_element(element)
+        if str(ele.element_type) == 'Numeric':
+            hierarchy.add_edge(parent=top_element, component=element, weight=1)
+
     # Update the hierarchy
     tm1.dimensions.hierarchies.update(hierarchy)
     # return success flag
@@ -245,10 +255,12 @@ def create_tm1_dimension_from_list(tm1:TM1Service,dim_name,data:list):
             except ValueError:
                 print(f"Warning: Could not add element {ele}")
                 continue
-
+        # default add 'count' as a measure
+        hierarchy.add_element('count', 'Numeric')
         # Update the hierarchy
         tm1.dimensions.hierarchies.update(hierarchy)
-
+        # return success flag
+        st.success('创建维度成功', icon="✅")
 
 # 创建cube
 def create_tm1_cube(tm1:TM1Service,cube_name, dimensions):
@@ -295,11 +307,38 @@ def get_tm1_dimension_elements(tm1:TM1Service,dimension_name):
         elements = []
     return elements
 # 导入tm1数据
-def import_tm1_data(conn:'Psql Connection',tm1:TM1Service,dimension_mapping:dict,measure_mapping:dict):
+def import_tm1_data(conn:'Psql Connection',tm1:TM1Service,cube_name,cube_dimensions:list,dimension_mapping:dict,measure_elements,measure_mapping:dict):
     cursor = conn.cursor()
-    cursor.execute('''
-                   select''')
-    pass
+    all_data = []
+    all_data_count = []
+    # 拼出需要查询的sql字符串
+    sql_columns = ''
+    sql_columns_and_measure = ''
+    for dimension in cube_dimensions:
+        sql_columns = sql_columns + ',' + dimension_mapping.get(dimension)     # 拼接列名
+    sql_columns = sql_columns[1:]
+    for measure in measure_elements:
+        sql_columns_and_measure = sql_columns + ',' + measure_mapping.get(measure)
+        cursor.execute(f"SELECT {sql_columns_and_measure} FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间")
+        data = cursor.fetchall()
+        # 将每一行转换为list可变对象后，追加measure字段
+        data_new = []
+        for row in data:
+            row_list = list(row)
+            new_tuple = tuple(row_list.insert(-1,measure))
+            data_new.append(new_tuple)
+        all_data = all_data + data_new
+    # 只记录数据行组合出现的次数
+    cursor.execute(f"SELECT {sql_columns} FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间")
+    data_count = cursor.fetchall()
+    data_count_new = []
+    for row in data_count:
+        row_list = list(row)
+        new_tuple = tuple(row_list.extend(['count',1]))
+        data_count_new.append(new_tuple)
+    # 导入tm1
+    tm1.cells.write(cube_name=cube_name,cellset_as_dict=all_data,dimensions=cube_dimensions,use_ti=True,increment=True)
+    tm1.cells.write(cube_name=cube_name, cellset_as_dict=data_count_new, dimensions=cube_dimensions, use_ti=True,increment=True)
 
 def main():
     # PostgreSQL连接
@@ -369,7 +408,7 @@ def main():
             # 导入数据
             if st.button("导入数据"):
                 target_cube_dimensions = get_tm1_cube_dimensions(tm1,target_cube_name)
-                #import_data(conn, tm1, dimension_mapping)
+                import_tm1_data(conn,tm1,target_cube_name,target_cube_dimensions,dimension_mapping,measure_elements,measure_mapping)
 
 
 if __name__ == "__main__":
