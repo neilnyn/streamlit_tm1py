@@ -272,12 +272,12 @@ def create_tm1_cube(tm1:TM1Service,cube_name, dimensions):
 
 # 获取实时表的列名
 def get_orders_columns(conn):
-    """获取orders表的所有列名"""
+    """获取orders表和关联时间维表的所有列名"""
     cursor = conn.cursor()
     cursor.execute("""
         SELECT column_name 
         FROM information_schema.columns 
-        WHERE table_name = 'orders'
+        WHERE table_name = 'time_dimension' OR table_name = 'orders'
     """)
     columns = [col[0] for col in cursor.fetchall()]
     return columns
@@ -309,37 +309,48 @@ def get_tm1_dimension_elements(tm1:TM1Service,dimension_name):
 # 导入tm1数据
 def import_tm1_data(conn:'Psql Connection',tm1:TM1Service,cube_name,cube_dimensions:list,dimension_mapping:dict,measure_elements,measure_mapping:dict):
     cursor = conn.cursor()
-    all_data = []
-    all_data_count = []
+    all_data = dict()
     # 拼出需要查询的sql字符串
     sql_columns = ''
     sql_columns_and_measure = ''
-    for dimension in cube_dimensions:
+    for dimension in cube_dimensions[:-1]:
         sql_columns = sql_columns + ',' + dimension_mapping.get(dimension)     # 拼接列名
     sql_columns = sql_columns[1:]
-    for measure in measure_elements:
-        sql_columns_and_measure = sql_columns + ',' + measure_mapping.get(measure)
-        cursor.execute(f"SELECT {sql_columns_and_measure} FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间")
+    for measure in measure_elements[:-1]:
+        sql_columns_and_measure = sql_columns + ',' + 'sum('+measure_mapping.get(measure)+') as '+measure_mapping.get(measure)
+        cursor.execute(f'''SELECT {sql_columns_and_measure} FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间
+        GROUP BY {sql_columns} ''')
+        #st.write(f"SELECT {sql_columns_and_measure} FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间")
         data = cursor.fetchall()
         # 将每一行转换为list可变对象后，追加measure字段
-        data_new = []
+        data_new = dict()
         for row in data:
             row_list = list(row)
-            new_tuple = tuple(row_list.insert(-1,measure))
-            data_new.append(new_tuple)
-        all_data = all_data + data_new
+            row_list.insert(-1, measure)
+            row_list_without_measure = row_list[:-1]            # 去除measure字段
+            new_tuple_without_measure = tuple(row_list_without_measure)
+            measure_value = row_list[-1]
+            data_new[new_tuple_without_measure] = measure_value
+        all_data.update(data_new)
     # 只记录数据行组合出现的次数
-    cursor.execute(f"SELECT {sql_columns} FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间")
+    cursor.execute(f'''SELECT {sql_columns},count(*) as count FROM time_dimension LEFT JOIN orders ON time_dimension.original_timestamp = orders.支付时间
+    GROUP BY {sql_columns} ''')
     data_count = cursor.fetchall()
-    data_count_new = []
+    data_count_new = dict()
     for row in data_count:
         row_list = list(row)
-        new_tuple = tuple(row_list.extend(['count',1]))
-        data_count_new.append(new_tuple)
+        row_list.insert(-1, 'count')
+        row_list_without_measure = row_list[:-1]  # 去除measure字段
+        new_tuple_without_measure = tuple(row_list_without_measure)
+        measure_value = row_list[-1]
+        data_count_new[new_tuple_without_measure] = measure_value
+    # data clear
+    tm1.cells.clear(cube=cube_name)
     # 导入tm1
-    tm1.cells.write(cube_name=cube_name,cellset_as_dict=all_data,dimensions=cube_dimensions,use_ti=True,increment=True)
+    tm1.cells.write(cube_name=cube_name,cellset_as_dict=all_data,dimensions=cube_dimensions, use_ti=True,increment=True)
     tm1.cells.write(cube_name=cube_name, cellset_as_dict=data_count_new, dimensions=cube_dimensions, use_ti=True,increment=True)
-
+    # success flag
+    st.success('数据导入Cube成功', icon="✅")
 def main():
     # PostgreSQL连接
     with psycopg2.connect(database="master", user="postgres", password="1234", host="localhost", port="5432") as conn:
@@ -382,7 +393,7 @@ def main():
             # 存储tm1维度和事实表字段映射关系
             dimension_mapping = {}
             # 为目标cube维度创建一个下拉选择框
-            for dim in target_cube_dimensions_name:
+            for dim in target_cube_dimensions_name[:-1]:
                 selected_column = st.selectbox(
                     f"为维度 '{dim}' 选择对应的列",
                     [""] + all_columns
@@ -396,7 +407,7 @@ def main():
             # 选择measure 维度并返回维度元素
             measure_dimension_name = st.selectbox('请挑选measure维度',target_cube_dimensions_name)
             measure_elements = get_tm1_dimension_elements(tm1,measure_dimension_name)
-            for measure_element in measure_elements:
+            for measure_element in measure_elements[:-1]:
                 selected_column = st.selectbox(
                     f"为measure '{measure_element}' 选择对应的列",
                     [""] + all_columns
